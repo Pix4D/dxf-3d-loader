@@ -1,69 +1,64 @@
+export { DxfLoader } from './DxfLoader';
+
 /** See TextRenderer.DefaultOptions for default values and documentation. */
 export type TextRendererOptions = {
-    curveSubdivision: number,
-    fallbackChar: string
-}
+  curveSubdivision: number;
+  fallbackChar: string;
+};
 
 /** See DxfScene.DefaultOptions for default values and documentation. */
 export type DxfSceneOptions = {
-    arcTessellationAngle: number,
-    minArcTessellationSubdivisions: number,
-    wireframeMesh: boolean,
-    textOptions: TextRendererOptions,
-}
+  arcTessellationAngle: number;
+  minArcTessellationSubdivisions: number;
+  wireframeMesh: boolean;
+  textOptions: TextRendererOptions;
+};
 
-/** See DxfViewer.DefaultOptions for default values and documentation. */
-export type DxfViewerOptions = {
-    canvasWidth: number,
-    canvasHeight: number,
-    autoResize: boolean,
-    clearColor: THREE.Color,
-    clearAlpha: number,
-    canvasAlpha: boolean,
-    canvasPremultipliedAlpha: boolean,
-    antialias: boolean,
-    colorCorrection: boolean,
-    blackWhiteInversion: boolean,
-    pointSize: number,
-    sceneOptions: DxfSceneOptions,
-}
+/** See DxfLoader.DefaultOptions for default values and documentation. */
+export type DxfLoaderOptions = {
+  clearColor: THREE.Color;
+  colorCorrection?: boolean;
+  blackWhiteInversion?: boolean;
+  pointSize?: number;
+  sceneOptions?: DxfSceneOptions;
+};
 
-export type DxfViewerLoadParams = {
-    url: string,
-    fonts: string[] | null,
-    progressCbk: ((phase: "font" | "fetch" | "parse" | "prepare",
-                   processedSize: number, totalSize: number) => void) | null,
-    workerFactory: (() => Worker) | null
-}
+export type DxfLoaderLoadParams = {
+  url: string;
+  fonts: string[] | null;
+  progressCbk?:
+    | ((
+        phase: 'font' | 'fetch' | 'parse' | 'prepare',
+        processedSize: number,
+        totalSize: number,
+      ) => void)
+    | null;
+  workerFactory?: (() => Worker) | null;
+};
 
 export type LayerInfo = {
-    name: string,
-    color: number
+  name: string;
+  color: number;
+};
+
+export type EventName = 'loaded' | 'cleared' | 'destroyed' | 'message';
+
+export declare class DxfLoader {
+  constructor(domContainer: HTMLElement, options: DxfLoaderOptions | null);
+  bounds: DxfBounds;
+  origin: { x: number; y: number };
+  Load(params: DxfLoaderLoadParams): Promise<void>;
+  GetLayers(): Iterable<LayerInfo>;
+  ShowLayer(name: string, show: boolean): void;
+  Clear(): void;
+  Destroy(): void;
+  GetScene(): THREE.Scene;
+  GetOrigin(): THREE.Vector2;
+  GetIsFlat(): boolean;
+  Subscribe(eventName: EventName, eventHandler: (event: any) => void): void;
+  Unsubscribe(eventName: EventName, eventHandler: (event: any) => void): void;
 }
 
-export type EventName = "loaded" | "cleared" | "destroyed" | "resized" | "pointerdown" |
-    "pointerup" | "viewChanged" | "message"
-
-export declare class DxfViewer {
-    constructor(domContainer: HTMLElement, options: DxfViewerOptions | null)
-    HasRenderer(): boolean
-    GetCanvas(): HTMLCanvasElement
-    SetSize(width: number, height: number): void
-    Load(params: DxfViewerLoadParams): Promise<void>
-    Render(): void
-    GetLayers(): Iterable<LayerInfo>
-    ShowLayer(name: string, show: boolean): void
-    Clear(): void
-    Destroy(): void
-    SetView(center: THREE.Vector3, width: number): void
-    FitView(minX: number, maxX: number, minY: number, maxY: number, padding: number): void
-    GetScene(): THREE.Scene
-    GetCamera(): THREE.Camera
-    GetOrigin(): THREE.Vector2
-    Subscribe(eventName: EventName, eventHandler: (event: any) => void): void
-    Unsubscribe(eventName: EventName, eventHandler: (event: any) => void): void
-}
-
-export declare namespace DxfViewer {
-    export function SetupWorker(): void
+export declare namespace DxfLoader {
+  export function SetupWorker(): void;
 }
