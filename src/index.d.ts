@@ -1,8 +1,10 @@
+export { DxfLoader } from './DxfLoader';
+
 /** See TextRenderer.DefaultOptions for default values and documentation. */
 export type TextRendererOptions = {
-    curveSubdivision: number,
-    fallbackChar: string
-}
+  curveSubdivision: number;
+  fallbackChar: string;
+};
 
 /** See DxfScene.DefaultOptions for default values and documentation. */
 export type DxfSceneOptions = {
@@ -13,8 +15,8 @@ export type DxfSceneOptions = {
     textOptions: TextRendererOptions,
 }
 
-/** See DxfViewer.DefaultOptions for default values and documentation. */
-export type DxfViewerOptions = {
+/** See DxfLoader.DefaultOptions for default values and documentation. */
+export type DxfLoaderOptions = {
     canvasWidth: number,
     canvasHeight: number,
     autoResize: boolean,
@@ -46,23 +48,25 @@ export type LayerInfo = {
     color: number
 }
 
-export type EventName = "loaded" | "cleared" | "destroyed" | "resized" | "pointerdown" |
-    "pointerup" | "viewChanged" | "message"
+export type EventName = 'loaded' | 'cleared' | 'destroyed' | 'message';
 
-export declare class DxfViewer {
-    constructor(domContainer: HTMLElement, options: DxfViewerOptions | null)
+export declare class DxfLoader {
+    constructor(domContainer: HTMLElement, options: DxfLoaderOptions | null)
     Clear(): void
     Destroy(): void
     FitView(minX: number, maxX: number, minY: number, maxY: number, padding: number): void
     GetCamera(): THREE.OrthographicCamera
     GetCanvas(): HTMLCanvasElement
+    bounds: DxfBounds
+    origin: { x: number; y: number }
+    GetIsFlat(): boolean
     GetLayers(): Iterable<LayerInfo>
     GetOrigin(): THREE.Vector2
     GetBounds(): {maxX: number, maxY: number, minX: number, minY: number} | null
     GetRenderer(): THREE.WebGLRenderer | null
     GetScene(): THREE.Scene
     HasRenderer(): boolean
-    Load(params: DxfViewerLoadParams): Promise<void>
+    Load(params: DxfLoaderLoadParams): Promise<void>
     Render(): void
     SetSize(width: number, height: number): void
     SetView(center: THREE.Vector3, width: number): void
@@ -71,8 +75,8 @@ export declare class DxfViewer {
     Unsubscribe(eventName: EventName, eventHandler: (event: any) => void): void
 }
 
-export declare namespace DxfViewer {
-    export function SetupWorker(): void
+export declare namespace DxfLoader {
+  export function SetupWorker(): void;
 }
 
 export type PatternLineDef = {
