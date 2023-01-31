@@ -289,6 +289,9 @@ export class DxfLoader {
         color: {
           value: new three.Color(0xff00ff),
         },
+        opacity: {
+          value: 1,
+        },
       },
       vertexShader: shaders.vertex,
       fragmentShader: shaders.fragment,
@@ -338,6 +341,9 @@ export class DxfLoader {
         pointSize: {
           value: 2,
         },
+        opacity: {
+          value: 1,
+        }
       },
       vertexShader: shaders.vertex,
       fragmentShader: shaders.fragment,
@@ -420,10 +426,11 @@ export class DxfLoader {
             precision highp float;
             precision highp int;
             uniform vec3 color;
+            uniform float opacity;
             out vec4 fragColor;
 
             void main() {
-                fragColor = vec4(color, 1.0);
+                fragColor = vec4(color, opacity);
             }
             `,
     };
