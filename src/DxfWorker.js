@@ -1,4 +1,4 @@
-import { DxfFetcher } from 'dxf-viewer/src/DxfFetcher';
+import { DxfFetcher } from './DxfFetcher';
 import { DxfScene3D } from './DxfScene3D';
 import opentype from 'opentype.js';
 

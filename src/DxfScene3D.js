@@ -1,9 +1,9 @@
 import { DynamicBuffer, NativeType } from './DynamicBuffer';
 import { Matrix3, Vector2, Vector3 } from 'three';
 
-import { BatchingKey } from 'dxf-viewer/src/BatchingKey';
-import { MTextFormatParser } from 'dxf-viewer/src/MTextFormatParser';
-import { RBTree } from 'dxf-viewer/src/RBTree';
+import { BatchingKey } from './BatchingKey';
+import { MTextFormatParser } from './MTextFormatParser';
+import { RBTree } from './RBTree';
 import { TextRenderer } from './TextRenderer';
 
 /** Use 16-bit indices for indexed geometry. */
