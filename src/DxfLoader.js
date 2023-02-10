@@ -1,9 +1,9 @@
 import * as three from 'three';
-import { BatchingKey } from 'dxf-viewer/src/BatchingKey';
+import { BatchingKey } from './BatchingKey';
 import { DxfWorker } from './DxfWorker';
-import { MaterialKey } from 'dxf-viewer/src/MaterialKey';
+import { MaterialKey } from './MaterialKey';
 import { ColorCode, DxfScene3D } from './DxfScene3D';
-import { RBTree } from 'dxf-viewer/src/RBTree';
+import { RBTree } from './RBTree';
 
 /** Level in "message" events. */
 const MessageLevel = Object.freeze({
