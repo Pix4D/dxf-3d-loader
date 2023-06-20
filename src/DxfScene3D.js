@@ -980,7 +980,7 @@ export class DxfScene3D {
         indices: [startIdx, endIdx],
         isClosed: false
       });
-    }
+    };
 
     for (const face of faces) {
 
@@ -1390,7 +1390,8 @@ export class DxfScene3D {
     // should fit into one chunk
     const chunk = batch.PushChunk(entity.vertices.length);
     for (const v of entity.vertices) {
-      chunk.PushVertex(this._TransformVertex(v, blockCtx));
+      const vertex = this._TransformVertex(v, blockCtx);
+      chunk.PushVertex(vertex);
     }
     for (const idx of entity.indices) {
       chunk.PushIndex(idx);
