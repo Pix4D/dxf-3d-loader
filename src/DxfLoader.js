@@ -1,9 +1,9 @@
 import * as three from 'three';
-import { BatchingKey } from './BatchingKey';
+import { BatchingKey } from 'dxf-viewer/src/BatchingKey';
 import { DxfWorker } from './DxfWorker';
-import { MaterialKey } from './MaterialKey';
+import { MaterialKey } from 'dxf-viewer/src/MaterialKey';
 import { ColorCode, DxfScene3D } from './DxfScene3D';
-import { RBTree } from './RBTree';
+import { RBTree } from 'dxf-viewer/src/RBTree';
 
 /** Level in "message" events. */
 const MessageLevel = Object.freeze({
@@ -420,6 +420,7 @@ export class DxfLoader {
                 vec4 pos = vec4(position, 1.0);
                 ${fullInstanceTransform}
                 ${pointInstanceTransform}
+
                 gl_Position = projectionMatrix * modelViewMatrix * pos;
                 ${pointSizeAssigment}
             }
