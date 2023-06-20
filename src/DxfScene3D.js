@@ -452,7 +452,7 @@ export class DxfScene3D {
     const vertices = [];
     const xR = Math.sqrt(
       entity.majorAxisEndPoint.x * entity.majorAxisEndPoint.x +
-        entity.majorAxisEndPoint.y * entity.majorAxisEndPoint.y,
+      entity.majorAxisEndPoint.y * entity.majorAxisEndPoint.y,
     );
     const yR = xR * entity.axisRatio;
     const rotation = Math.atan2(entity.majorAxisEndPoint.y, entity.majorAxisEndPoint.x);
@@ -847,6 +847,7 @@ export class DxfScene3D {
     this._UpdateBounds(new Vector2(bounds.maxX, bounds.minY).applyMatrix3(transform));
 
     transform.translate(-this.origin.x, -this.origin.y);
+    transform.elements[8] = entity.position.z;
     //XXX grid instancing not supported yet
     if (block.flatten) {
       for (const batch of block.batches) {
@@ -935,7 +936,107 @@ export class DxfScene3D {
     return vertices;
   }
 
+  *_DecomposePolyfaceMesh(entity, blockCtx = null) {
+    const layer = this._GetEntityLayer(entity, blockCtx);
+    const color = this._GetEntityColor(entity, blockCtx);
+
+    const vertices = [];
+    const faces = [];
+
+    for (const v of entity.vertices) {
+      if (v.faces) {
+        const face = {
+          indices: [],
+          hiddenEdges: []
+        };
+        for (const vIdx of v.faces) {
+          if (vIdx == 0) {
+            break;
+          }
+          face.indices.push(vIdx < 0 ? -vIdx - 1 : vIdx - 1);
+          face.hiddenEdges.push(vIdx < 0);
+        }
+        if (face.indices.length == 3 || face.indices.length == 4) {
+          faces.push(face);
+        }
+      } else {
+        vertices.push(new Vector3(v.x, v.y, v.z));
+      }
+    }
+
+    const polylines = [];
+    const CommitLineSegment = (startIdx, endIdx) => {
+      if (polylines.length > 0) {
+        const prev = polylines[polylines.length - 1];
+        if (prev.indices[prev.indices.length - 1] == startIdx) {
+          prev.indices.push(endIdx);
+          return;
+        }
+        if (prev.indices[0] == prev.indices[prev.indices.length - 1]) {
+          prev.isClosed = true;
+        }
+      }
+      polylines.push({
+        indices: [startIdx, endIdx],
+        isClosed: false
+      });
+    }
+
+    for (const face of faces) {
+
+      if (this.options.wireframeMesh) {
+        for (let i = 0; i < face.indices.length; i++) {
+          if (face.hiddenEdges[i]) {
+            continue;
+          }
+          const nextIdx = i < face.indices.length - 1 ? i + 1 : 0;
+          CommitLineSegment(face.indices[i], face.indices[nextIdx]);
+        }
+
+      } else {
+        let indices;
+        if (face.indices.length == 3) {
+          indices = face.indices;
+        } else {
+          indices = [face.indices[0], face.indices[1], face.indices[2],
+          face.indices[0], face.indices[2], face.indices[3]];
+        }
+        yield new Entity({
+          type: Entity.Type.TRIANGLES,
+          vertices, indices, layer, color
+        });
+      }
+    }
+
+    if (this.options.wireframeMesh) {
+      for (const pl of polylines) {
+        if (pl.length == 2) {
+          yield new Entity({
+            type: Entity.Type.LINE_SEGMENTS,
+            vertices: [vertices[pl.indices[0]], vertices[pl.indices[1]]],
+            layer, color
+          });
+        } else {
+          const _vertices = [];
+          for (const vIdx of pl.indices) {
+            _vertices.push(vertices[vIdx]);
+          }
+          yield new Entity({
+            type: Entity.Type.POLYLINE,
+            vertices: _vertices, layer, color,
+            shape: pl.isClosed
+          });
+        }
+      }
+    }
+  }
+
   *_DecomposePolyline(entity, blockCtx = null) {
+    if (entity.isPolyfaceMesh) {
+      yield* this._DecomposePolyfaceMesh(entity, blockCtx);
+      return;
+    }
+
     if (entity.type === 'LWPOLYLINE') {
       const vertices = [];
       const elevation = entity.elevation;
@@ -1503,7 +1604,7 @@ class RenderBatch {
    */
   PushInstanceTransform(matrix) {
     /* Storing in row-major order as expected by renderer. */
-    for (let row = 0; row < 2; row++) {
+    for (let row = 0; row < 3; row++) {
       for (let col = 0; col < 3; col++) {
         this.transforms.Push(matrix.elements[col * 3 + row]);
       }
@@ -1550,7 +1651,7 @@ class RenderBatch {
     if (this.key.geometryType !== batch.key.geometryType) {
       throw new Error(
         'Rendering batch merging geometry type mismatch: ' +
-          `${this.key.geometryType} !== ${batch.key.geometryType}`,
+        `${this.key.geometryType} !== ${batch.key.geometryType}`,
       );
     }
     if (this.key.IsInstanced()) {
@@ -1560,7 +1661,7 @@ class RenderBatch {
       /* Merge chunks. */
       for (const chunk of batch.chunks) {
         const verticesSize = chunk.vertices.size;
-        const chunkWriter = this.PushChunk(verticesSize / 2);
+        const chunkWriter = this.PushChunk(verticesSize / 3);
         for (let i = 0; i < verticesSize; i += 3) {
           const v = new Vector2(chunk.vertices.Get(i), chunk.vertices.Get(i + 1));
           if (transform) {

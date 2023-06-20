@@ -374,6 +374,8 @@ export class DxfLoader {
             in vec3 instanceTransform0;
             /* Second row. */
             in vec3 instanceTransform1;
+            /* Third row. */
+            in vec3 instanceTransform2;
             `
         : '';
     const fullInstanceTransform =
@@ -381,7 +383,8 @@ export class DxfLoader {
         ? `
             pos.xy = mat2(instanceTransform0[0], instanceTransform1[0],
                           instanceTransform0[1], instanceTransform1[1]) * pos.xy +
-                     vec2(instanceTransform0[2], instanceTransform1[2]);
+                     vec2(instanceTransform0[2], instanceTransform1[2]);  
+            pos.z += instanceTransform2[2];
             `
         : '';
 
@@ -583,9 +586,10 @@ class Batch {
       /* Each transform is 3x2 matrix which is split into two 3D vectors which will occupy two
        * attribute slots.
        */
-      const buf = new three.InstancedInterleavedBuffer(transformsArray, 6);
+      const buf = new three.InstancedInterleavedBuffer(transformsArray, 9);
       this.transforms0 = new three.InterleavedBufferAttribute(buf, 3, 0);
       this.transforms1 = new three.InterleavedBufferAttribute(buf, 3, 3);
+      this.transforms2 = new three.InterleavedBufferAttribute(buf, 3, 6);
     }
 
     if (
@@ -701,6 +705,7 @@ class Batch {
     } else {
       geometry.setAttribute('instanceTransform0', this.transforms0);
       geometry.setAttribute('instanceTransform1', this.transforms1);
+      geometry.setAttribute('instanceTransform2', this.transforms2);
     }
   }
 
