@@ -1,6 +1,6 @@
 {
     "name": "dxf-3d-loader",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "description": "JavaScript DXF 3D file loader",
     "main": "src/index.js",
     "author": "Artyom Lebedev<artyom.lebedev@gmail.com>",
