@@ -17,29 +17,29 @@ export type DxfSceneOptions = {
 
 /** See DxfLoader.DefaultOptions for default values and documentation. */
 export type DxfLoaderOptions = {
-    canvasWidth: number,
-    canvasHeight: number,
-    autoResize: boolean,
+    canvasWidth?: number,
+    canvasHeight?: number,
+    autoResize?: boolean,
     clearColor: THREE.Color,
-    clearAlpha: number,
-    canvasAlpha: boolean,
-    canvasPremultipliedAlpha: boolean,
-    antialias: boolean,
+    clearAlpha?: number,
+    canvasAlpha?: boolean,
+    canvasPremultipliedAlpha?: boolean,
+    antialias?: boolean,
     colorCorrection?: boolean,
     blackWhiteInversion?: boolean,
     pointSize?: number,
     sceneOptions?: DxfSceneOptions,
-    retainParsedDxf: boolean,
-    preserveDrawingBuffer: boolean,
-    fileEncoding: string
+    retainParsedDxf?: boolean,
+    preserveDrawingBuffer?: boolean,
+    fileEncoding?: string
 }
 
 export type DxfLoaderLoadParams = {
     url: string,
     fonts: string[] | null,
-    progressCbk: ((phase: "font" | "fetch" | "parse" | "prepare",
+    progressCbk?: ((phase: "font" | "fetch" | "parse" | "prepare",
                    processedSize: number, totalSize: number) => void) | null,
-    workerFactory: (() => Worker) | null
+    workerFactory?: (() => Worker) | null
 }
 
 export type LayerInfo = {
