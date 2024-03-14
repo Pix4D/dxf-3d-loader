@@ -4,6 +4,7 @@ import AUTO_CAD_COLOR_INDEX from './AutoCadColorIndex';
 import Face from './entities/3dface';
 import Arc from './entities/arc';
 import AttDef from './entities/attdef';
+import Attribute from './entities/attribute'
 import Circle from './entities/circle';
 import Dimension from './entities/dimension';
 import Ellipse from './entities/ellipse';
@@ -16,6 +17,8 @@ import Polyline from './entities/polyline';
 import Solid from './entities/solid';
 import Spline from './entities/spline';
 import Text from './entities/text';
+import Hatch from './entities/hatch';
+import dimStyleCodes from './DimStyleCodes';
 //import Vertex from './entities/';
 
 import log from 'loglevel';
@@ -32,6 +35,7 @@ function registerDefaultEntityHandlers(dxfParser) {
     dxfParser.registerEntityHandler(Face);
     dxfParser.registerEntityHandler(Arc);
     dxfParser.registerEntityHandler(AttDef);
+    dxfParser.registerEntityHandler(Attribute);
     dxfParser.registerEntityHandler(Circle);
     dxfParser.registerEntityHandler(Dimension);
     dxfParser.registerEntityHandler(Ellipse);
@@ -44,6 +48,7 @@ function registerDefaultEntityHandlers(dxfParser) {
     dxfParser.registerEntityHandler(Solid);
     dxfParser.registerEntityHandler(Spline);
     dxfParser.registerEntityHandler(Text);
+    dxfParser.registerEntityHandler(Hatch);
     //dxfParser.registerEntityHandler(require('./entities/vertex'));
 }
 
@@ -66,7 +71,7 @@ DxfParser.prototype.parseSync = function(source) {
     if(typeof(source) === 'string') {
         return this._parse(source);
     }else {
-        console.error('Cannot read dxf source of type `' + typeof(source));
+        console.error('Cannot read DXF source of type `' + typeof(source));
         return null;
     }
 };
@@ -87,7 +92,7 @@ DxfParser.prototype.parseStream = function(stream, done) {
     function onEnd() {
         try {
             var dxf = self._parse(dxfString);
-        }catch(err) {
+        } catch(err) {
             return done(err);
         }
         done(null, dxf);
@@ -103,7 +108,9 @@ DxfParser.prototype._parse = function(dxfString) {
     var dxfLinesArray = dxfString.split(/\r\n|\r|\n/g);
 
     scanner = new DxfArrayScanner(dxfLinesArray);
-    if(!scanner.hasNext()) throw Error('Empty file');
+    if (!scanner.hasNext()) {
+        throw Error('Empty file');
+    }
 
     var self = this;
 
@@ -375,13 +382,17 @@ DxfParser.prototype._parse = function(dxfString) {
             }
         }
         var tableRecords = table[tableDefinition.tableRecordsProperty];
-        if(tableRecords) {
+        if (tableRecords) {
             if(tableRecords.constructor === Array){
                 actualCount = tableRecords.length;
             } else if(typeof(tableRecords) === 'object') {
                 actualCount = Object.keys(tableRecords).length;
             }
-            if(expectedCount !== actualCount) log.warn('Parsed ' + actualCount + ' ' + tableDefinition.dxfSymbolName + '\'s but expected ' + expectedCount);
+            if(expectedCount !== actualCount) {
+                log.warn(`Parsed ${actualCount} ${tableDefinition.dxfSymbolName}'s but expected ${expectedCount}`);
+            }
+        } else {
+            table[tableDefinition.tableRecordsProperty] = []
         }
         curr = scanner.next();
         return table;
@@ -558,7 +569,9 @@ DxfParser.prototype._parse = function(dxfString) {
                     break;
                 case 0:
                     log.debug('}');
-                    if(length > 0 && length !== ltype.pattern.length) log.warn('lengths do not match on LTYPE pattern');
+                    if (length > 0 && length !== ltype.pattern.length) {
+                        log.warn('lengths do not match on LTYPE pattern');
+                    }
                     ltypes[ltypeName] = ltype;
                     ltype = {};
                     log.debug('LType {');
@@ -629,6 +642,126 @@ DxfParser.prototype._parse = function(dxfString) {
         return layers;
     };
 
+    var parseDimStyles = function() {
+        var dimStyles = {},
+            styleName,
+            style = {};
+
+        log.debug('DimStyle {');
+        curr = scanner.next();
+        while(!groupIs(0, 'ENDTAB')) {
+
+            if (dimStyleCodes.has(curr.code)) {
+                style[dimStyleCodes.get(curr.code)] = curr.value
+                curr = scanner.next();
+            } else {
+                switch(curr.code) {
+                case 2: // style name
+                    style.name = curr.value;
+                    styleName = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 0:
+                    // New style
+                    if(curr.value === 'DIMSTYLE') {
+                        log.debug('}');
+                        dimStyles[styleName] = style;
+                        log.debug('DimStyle {');
+                        style = {};
+                        styleName = undefined;
+                        curr = scanner.next();
+                    }
+                    break;
+                default:
+                    logUnhandledGroup(curr);
+                    curr = scanner.next();
+                    break;
+                }
+            }
+        }
+        // Note: do not call scanner.next() here,
+        //  parseLayerTable() needs the current group
+        log.debug('}');
+        dimStyles[styleName] = style;
+
+        return dimStyles;
+    };
+
+    var parseStyles = function () {
+        var styles = {};
+        var style = {};
+        var styleName;
+
+        log.debug('Style {');
+        curr = scanner.next();
+        while (!groupIs(0, END_OF_TABLE_VALUE)) {
+            switch (curr.code) {
+                case 100:
+                    style.subClassMarker = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 2:
+                    style.styleName = curr.value;
+                    styleName = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 70:
+                    style.standardFlag = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 40:
+                    style.fixedTextHeight = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 41:
+                    style.widthFactor = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 50:
+                    style.obliqueAngle = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 71:
+                    style.textGenerationFlag = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 42:
+                    style.lastHeight = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 3:
+                    style.font = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 4:
+                    style.bigFont = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 1071:
+                    style.extendedFont = curr.value;
+                    curr = scanner.next();
+                    break;
+                case 0:
+                    if (curr.value === 'STYLE') {
+                        log.debug('}');
+                        styles[styleName] = style;
+                        log.debug('Style {');
+                        style = {};
+                        styleName = undefined;
+                        curr = scanner.next();
+                    }
+                    break;
+                default:
+                    logUnhandledGroup(curr);
+                    curr = scanner.next();
+                    break;
+            }
+        }
+        log.debug('}');
+        styles[styleName] = style;
+        return styles;
+    };
+
     var tableDefinitions = {
         VPORT: {
             tableRecordsProperty: 'viewPorts',
@@ -647,7 +780,19 @@ DxfParser.prototype._parse = function(dxfString) {
             tableName: 'layer',
             dxfSymbolName: 'LAYER',
             parseTableRecords: parseLayers
-        }
+        },
+        DIMSTYLE: {
+            tableRecordsProperty: 'dimStyles',
+            tableName: 'dimstyle',
+            dxfSymbolName: 'DIMSTYLE',
+            parseTableRecords: parseDimStyles
+        },
+        STYLE: {
+            tableRecordsProperty: 'styles',
+            tableName: 'style',
+            dxfSymbolName: 'STYLE',
+            parseTableRecords: parseStyles,
+        },
     };
 
     /**
@@ -672,7 +817,7 @@ DxfParser.prototype._parse = function(dxfString) {
 
                 var entity;
                 var handler = self._entityHandlers[curr.value];
-                if(handler != null) {
+                if (handler != null) {
                     log.debug(curr.value + ' {');
                     entity = handler.parseEntity(scanner, curr);
                     curr = scanner.lastReadGroup;
@@ -689,7 +834,9 @@ DxfParser.prototype._parse = function(dxfString) {
                 curr = scanner.next();
             }
         }
-        if(endingOnValue == 'ENDSEC') curr = scanner.next(); // swallow up ENDSEC, but not ENDBLK
+        if (endingOnValue == 'ENDSEC') {
+            curr = scanner.next(); // swallow up ENDSEC, but not ENDBLK
+        }
         return entities;
     };
 
@@ -721,15 +868,19 @@ DxfParser.prototype._parse = function(dxfString) {
             return point;
         }
         point.z = curr.value;
-        
+
         return point;
     };
 
     var ensureHandle = function(entity) {
-        if(!entity) throw new TypeError('entity cannot be undefined or null');
+        if (!entity) {
+            throw new TypeError('entity cannot be undefined or null');
+        }
 
-        if(!entity.handle) entity.handle = lastHandle++;
-    };
+        if (!entity.handle) {
+            entity.handle = lastHandle++;
+        }
+    }
 
     parseAll();
     return dxf;

@@ -24,13 +24,12 @@ EntityParser.prototype.parseEntity = function(scanner, curr) {
             break;
         case 51: // end angle
             entity.endAngle = Math.PI / 180 * curr.value;
-            entity.angleLength = entity.endAngle - entity.startAngle; // angleLength is deprecated
             break;
         case 210:
             entity.extrusionDirection = helpers.parsePoint(scanner);
             break;
         default: // ignored attribute
-            helpers.checkCommonEntityProperties(entity, curr);
+            helpers.checkCommonEntityProperties(entity, curr, scanner);
             break;
         }
         curr = scanner.next();

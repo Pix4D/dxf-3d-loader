@@ -40,22 +40,22 @@ EntityParser.prototype.parseEntity = function(scanner, curr) {
         case 50: // curve fit tangent direction
             break;
         case 71: // polyface mesh vertex index
-            entity.faceA = curr.value;
+            entity.faces = [curr.value];
             break;
         case 72: // polyface mesh vertex index
-            entity.faceB = curr.value;
+            entity.faces[1] = curr.value;
             break;
         case 73: // polyface mesh vertex index
-            entity.faceC = curr.value;
+            entity.faces[2] = curr.value;
             break;
         case 74: // polyface mesh vertex index
-            entity.faceD = curr.value;
+            entity.faces[3] = curr.value;
             break;
         default:
-            helpers.checkCommonEntityProperties(entity, curr);
+            helpers.checkCommonEntityProperties(entity, curr, scanner);
             break;
         }
-        
+
         curr = scanner.next();
     }
     return entity;

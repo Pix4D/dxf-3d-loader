@@ -1,9 +1,15 @@
-import {DynamicBuffer, NativeType} from "./DynamicBuffer"
-import {BatchingKey} from "./BatchingKey"
-import {Matrix3, Vector2} from "three"
-import {TextRenderer} from "./TextRenderer"
-import {RBTree} from "./RBTree"
-import {MTextFormatParser} from "./MTextFormatParser";
+import { DynamicBuffer, NativeType } from "./DynamicBuffer"
+import { BatchingKey } from "./BatchingKey"
+import { Matrix3, Vector2 } from "three"
+import { TextRenderer, ParseSpecialChars, HAlign, VAlign } from "./TextRenderer"
+import { RBTree } from "./RBTree"
+import { MTextFormatParser } from "./MTextFormatParser"
+import dimStyleCodes from './parser/DimStyleCodes'
+import { LinearDimension } from "./LinearDimension"
+import { HatchCalculator, HatchStyle } from "./HatchCalculator"
+import { LookupPattern, Pattern } from "./Pattern"
+import "./patterns"
+
 
 /** Use 16-bit indices for indexed geometry. */
 const INDEXED_CHUNK_SIZE = 0x10000
@@ -14,8 +20,49 @@ const POINT_SHAPE_BLOCK_NAME = "__point_shape"
 const BLOCK_FLATTENING_VERTICES_THRESHOLD = 1024
 /** Number of subdivisions per spline point. */
 const SPLINE_SUBDIVISION = 4
-/** Regex for parsing special characters in text entities. */
-const SPECIAL_CHARS_RE = /(?:%%([dpc]))|(?:\\U\+([0-9a-fA-F]{4}))/g
+/** Limit hatch lines number to some reasonable value to mitigate hanging and out-of-memory issues
+ * on bad files.
+ */
+const MAX_HATCH_LINES = 20000
+/** Limit hatch segments number per line to some reasonable value to mitigate hanging and
+ * out-of-memory issues on bad files.
+ */
+const MAX_HATCH_SEGMENTS = 20000
+
+
+/** Default values for system variables. Entry may be either value or function to call for obtaining
+ * a value, the function `this` argument is DxfScene.
+ */
+const DEFAULT_VARS = {
+    /* https://knowledge.autodesk.com/support/autocad/learn-explore/caas/CloudHelp/cloudhelp/2016/ENU/AutoCAD-Core/files/GUID-A17A69D7-25EF-4F57-B4EB-D53A56AB909C-htm.html */
+    DIMTXT: function() {
+        //XXX should select value for imperial or metric units
+        return 2.5 //XXX 0.18 for imperial
+    },
+    DIMASZ: 2.5,//XXX 0.18 for imperial
+    DIMCLRD: 0,
+    DIMCLRE: 0,
+    DIMCLRT: 0,
+    DIMDEC: 2, //XXX 4 for imperial,
+    DIMDLE: 0,
+    DIMDSEP: ".".charCodeAt(0), //XXX "," for imperial,
+    DIMEXE: 1.25, //XXX 0.18 for imperial
+    DIMEXO: 0.625, // XXX 0.0625 for imperial
+    DIMFXL: 1,
+    DIMFXLON: false,
+    DIMGAP: 0.625,//XXX for imperial
+    DIMLFAC: 1,
+    DIMRND: 0,
+    DIMSAH: 0,
+    DIMSCALE: 1,
+    DIMSD1: 0,
+    DIMSD2: 0,
+    DIMSE1: 0,
+    DIMSE2: 0,
+    DIMSOXD: false,
+    DIMTSZ: 0,
+    DIMZIN: 8, //XXX 0 for imperial,
+}
 
 /** This class prepares an internal representation of a DXF file, optimized fo WebGL rendering. It
  * is decoupled in such a way so that it should be possible to build it in a web-worker, effectively
@@ -39,9 +86,17 @@ export class DxfScene {
         this.layers = new Map()
         /* Indexed by block name, value is Block. */
         this.blocks = new Map()
+        /** Indexed by dimension style name, value is DIMSTYLE object from parsed DXF. */
+        this.dimStyles = new Map()
+        /** Indexed by variable name (without leading '$'). */
+        this.vars = new Map()
+        this.fontStyles = new Map()
+        /* Indexed by entity handle. */
+        this.inserts = new Map()
         this.bounds = null
         this.pointShapeBlock = null
         this.numBlocksFlattened = 0
+        this.numEntitiesFiltered = 0
     }
 
     /** Build the scene from the provided parsed DXF.
@@ -52,16 +107,36 @@ export class DxfScene {
      */
     async Build(dxf, fontFetchers) {
         const header = dxf.header || {}
+
+        for (const [name, value] of Object.entries(header)) {
+            if (name.startsWith("$")) {
+                this.vars.set(name.slice(1), value)
+            }
+        }
+
+        /* Zero angle direction, 0 is +X. */
+        this.angBase = this.vars.get("ANGBASE") ?? 0
         /* 0 - CCW, 1 - CW */
-        this.angBase = header["$ANGBASE"] || 0
-        /* Zero angle direction, 0 is +X */
-        this.angDir = header["$ANGDIR"] || 0
-        this.pdMode = header["$PDMODE"] || 0
-        this.pdSize = header["$PDSIZE"] || 0
+        this.angDir = this.vars.get("ANGDIR") ?? 0
+        this.pdSize = this.vars.get("PDSIZE") ?? 0
+        this.isMetric = (this.vars.get("MEASUREMENT") ?? 1) == 1
 
         if(dxf.tables && dxf.tables.layer) {
             for (const [, layer] of Object.entries(dxf.tables.layer.layers)) {
+                layer.displayName = ParseSpecialChars(layer.name)
                 this.layers.set(layer.name, layer)
+            }
+        }
+
+        if(dxf.tables && dxf.tables.dimstyle) {
+            for (const [, style] of Object.entries(dxf.tables.dimstyle.dimStyles)) {
+                this.dimStyles.set(style.name, style)
+            }
+        }
+
+        if (dxf.tables && dxf.tables.style) {
+            for (const [, style] of Object.entries(dxf.tables.style.styles)) {
+                this.fontStyles.set(style.styleName, style);
             }
         }
 
@@ -77,9 +152,19 @@ export class DxfScene {
 
         /* Scan all entities to analyze block usage statistics. */
         for (const entity of dxf.entities) {
+            if (!this._FilterEntity(entity)) {
+                continue
+            }
             if (entity.type === "INSERT") {
+                this.inserts.set(entity.handle, entity)
                 const block = this.blocks.get(entity.name)
                 block?.RegisterInsert(entity)
+
+            } else if (entity.type == "DIMENSION") {
+                if ((entity.block ?? null) !== null) {
+                    const block = this.blocks.get(entity.block)
+                    block?.RegisterInsert(entity)
+                }
             }
         }
 
@@ -87,6 +172,9 @@ export class DxfScene {
             if (block.data.hasOwnProperty("entities")) {
                 const blockCtx = block.DefinitionContext()
                 for (const entity of block.data.entities) {
+                    if (!this._FilterEntity(entity)) {
+                        continue
+                    }
                     this._ProcessDxfEntity(entity, blockCtx)
                 }
             }
@@ -97,8 +185,13 @@ export class DxfScene {
         console.log(`${this.numBlocksFlattened} blocks flattened`)
 
         for (const entity of dxf.entities) {
+            if (!this._FilterEntity(entity)) {
+                this.numEntitiesFiltered++
+                continue
+            }
             this._ProcessDxfEntity(entity)
         }
+        console.log(`${this.numEntitiesFiltered} entities filtered`)
 
         this.scene = this._BuildScene()
 
@@ -108,23 +201,51 @@ export class DxfScene {
         delete this.textRenderer
     }
 
+    /** @return False to suppress the specified entity, true to permit rendering. */
+    _FilterEntity(entity) {
+        return !this.options.suppressPaperSpace || !entity.inPaperSpace
+    }
+
     async _FetchFonts(dxf) {
 
+        function IsTextEntity(entity) {
+            return entity.type === "TEXT" || entity.type === "MTEXT" ||
+                   entity.type === "DIMENSION" || entity.type === "ATTDEF" ||
+                   entity.type === "ATTRIB"
+        }
+
         const ProcessEntity = async (entity) => {
+            if (!this._FilterEntity(entity)) {
+                return
+            }
             let ret
-            if (entity.type === "TEXT") {
-                ret = await this.textRenderer.FetchFonts(this._ParseSpecialChars(entity.text))
+            if (entity.type === "TEXT" || entity.type === "ATTRIB" || entity.type === "ATTDEF") {
+                ret = await this.textRenderer.FetchFonts(ParseSpecialChars(entity.text))
+
             } else if (entity.type === "MTEXT") {
                 const parser = new MTextFormatParser()
                 parser.Parse(entity.text)
+                ret = true
                 //XXX formatted MTEXT may specify some fonts explicitly, this is not yet supported
                 for (const text of parser.GetText()) {
-                    if (!await this.textRenderer.FetchFonts(this._ParseSpecialChars(text))) {
+                    if (!await this.textRenderer.FetchFonts(ParseSpecialChars(text))) {
                         ret = false
                         break
                     }
                 }
+
+            } else if (entity.type === "DIMENSION") {
                 ret = true
+                const dim = this._CreateLinearDimension(entity)
+                if (dim) {
+                    for (const text of dim.GetTexts()) {
+                        if (!await this.textRenderer.FetchFonts(text)) {
+                            ret = false
+                            break
+                        }
+                    }
+                }
+
             } else {
                 throw new Error("Bad entity type")
             }
@@ -135,7 +256,7 @@ export class DxfScene {
         }
 
         for (const entity of dxf.entities) {
-            if (entity.type === "TEXT" || entity.type === "MTEXT") {
+            if (IsTextEntity(entity)) {
                 if (!await ProcessEntity(entity)) {
                     /* Failing to resolve some character means that all fonts have been loaded and
                      * checked. No mean to check the rest strings. However until it is encountered,
@@ -150,7 +271,7 @@ export class DxfScene {
         for (const block of this.blocks.values()) {
             if (block.data.hasOwnProperty("entities")) {
                 for (const entity of block.data.entities) {
-                    if (entity.type === "TEXT" || entity.type === "MTEXT") {
+                    if (IsTextEntity(entity)) {
                         if (!await ProcessEntity(entity)) {
                             return
                         }
@@ -201,6 +322,15 @@ export class DxfScene {
         case "SOLID":
             renderEntities = this._DecomposeSolid(entity, blockCtx)
             break
+        case "DIMENSION":
+            renderEntities = this._DecomposeDimension(entity, blockCtx)
+            break
+        case "ATTRIB":
+            renderEntities = this._DecomposeAttribute(entity, blockCtx)
+            break
+        case "HATCH":
+            renderEntities = this._DecomposeHatch(entity, blockCtx)
+            break
         default:
             console.log("Unhandled entity type: " + entity.type)
             return
@@ -209,7 +339,6 @@ export class DxfScene {
             this._ProcessEntity(renderEntity, blockCtx)
         }
     }
-
     /**
      * @param entity {Entity}
      * @param blockCtx {?BlockContext}
@@ -257,11 +386,11 @@ export class DxfScene {
         const layer = this._GetEntityLayer(entity, blockCtx)
         const color = this._GetEntityColor(entity, blockCtx)
         yield new Entity({
-                             type: Entity.Type.LINE_SEGMENTS,
-                             vertices: entity.vertices,
-                             layer, color,
-                             lineType: this._GetLineType(entity, entity.vertices[0])
-                         })
+            type: Entity.Type.LINE_SEGMENTS,
+            vertices: entity.vertices,
+            layer, color,
+            lineType: this._GetLineType(entity, entity.vertices[0])
+        })
     }
 
     /** Generate vertices for bulged line segment.
@@ -275,7 +404,7 @@ export class DxfScene {
         const a = 4 * Math.atan(bulge)
         const aAbs = Math.abs(a)
         if (aAbs < this.options.arcTessellationAngle) {
-            vertices.push(endVtx)
+            vertices.push(new Vector2(endVtx.x, endVtx.y))
             return
         }
         const ha = a / 2
@@ -308,31 +437,36 @@ export class DxfScene {
             }
             for (let i = 1; i < numSegments; i++) {
                 const a = startAngle + i * step
-                const v = {
-                    x: center.x + R * Math.cos(a),
-                    y: center.y + R * Math.sin(a)
-                }
+                const v = new Vector2(
+                    center.x + R * Math.cos(a),
+                    center.y + R * Math.sin(a)
+                )
                 vertices.push(v)
             }
         }
-        vertices.push(endVtx)
+        vertices.push(new Vector2(endVtx.x, endVtx.y))
     }
 
     /** Generate vertices for arc segment.
      *
      * @param vertices Generated vertices pushed here.
-     * @param center {{x, y}} Center vector.
-     * @param radius {number}
-     * @param startAngle {?number} Start angle. Zero if not specified. Arc is drawn in CCW direction
-     *  from start angle towards end angle.
-     * @param endAngle {?number} Optional end angle. Full circle is drawn if not specified.
-     * @param tessellationAngle {?number} Arc tessellation angle, default value is taken from scene
-     *  options.
-     * @param yRadius {?number} Specify to get ellipse arc. `radius` parameter used as X radius.
-     * @param transform {?Matrix3} Optional transform matrix for the arc. Applied as last operation.
+     * @param {{x, y}} center  Center vector.
+     * @param {number} radius
+     * @param {?number} startAngle Start angle in radians. Zero if not specified. Arc is drawn in
+     *  CCW direction from start angle towards end angle.
+     * @param {?number} endAngle Optional end angle in radians. Full circle is drawn if not
+     *  specified.
+     * @param {?number} tessellationAngle Arc tessellation angle in radians, default value is taken
+     *  from scene options.
+     * @param {?number} yRadius Specify to get ellipse arc. `radius` parameter used as X radius.
+     * @param {?Matrix3} transform Optional transform matrix for the arc. Applied as last operation.
+     * @param {?number} rotation Optional rotation angle for generated arc. Mostly for ellipses.
+     * @param {?boolean} cwAngleDir Angles counted in clockwise direction from X positive direction.
+     * @return {Vector2[]} List of generated vertices.
      */
     _GenerateArcVertices({vertices, center, radius, startAngle = null, endAngle = null,
-                          tessellationAngle = null, yRadius = null, transform = null}) {
+                          tessellationAngle = null, yRadius = null, transform = null,
+                          rotation = null, ccwAngleDir = true}) {
         if (!center || !radius) {
             return
         }
@@ -357,27 +491,46 @@ export class DxfScene {
         } else {
             endAngle += this.angBase
         }
-        if (this.angDir) {
+
+        //XXX this.angDir - not clear, seem in practice it does not alter arcs rendering.
+        if (!ccwAngleDir) {
             const tmp = startAngle
-            startAngle = endAngle
-            endAngle = tmp
+            startAngle = -endAngle
+            endAngle = -tmp
         }
+
         while (endAngle <= startAngle) {
             endAngle += Math.PI * 2
         }
 
         const arcAngle = endAngle - startAngle
+
         let numSegments = Math.floor(arcAngle / tessellationAngle)
         if (numSegments === 0) {
             numSegments = 1
         }
         const step = arcAngle / numSegments
+
+        let rotationTransform = null
+        if (rotation) {
+            rotationTransform = new Matrix3().makeRotation(rotation)
+        }
+
         for (let i = 0; i <= numSegments; i++) {
             if (i === numSegments && isClosed) {
                 break
             }
-            const a = startAngle + i * step
+            let a
+            if (ccwAngleDir) {
+                a = startAngle + i * step
+            } else {
+                a = startAngle + (numSegments - i) * step
+            }
             const v = new Vector2(radius * Math.cos(a), yRadius * Math.sin(a))
+
+            if (rotationTransform) {
+                v.applyMatrix3(rotationTransform)
+            }
             v.add(center)
             if (transform) {
                 v.applyMatrix3(transform)
@@ -395,10 +548,10 @@ export class DxfScene {
                                    startAngle: entity.startAngle, endAngle: entity.endAngle,
                                    transform: this._GetEntityExtrusionTransform(entity)})
         yield new Entity({
-                             type: Entity.Type.POLYLINE,
-                             vertices, layer, color, lineType,
-                             shape: entity.endAngle === undefined
-                         })
+            type: Entity.Type.POLYLINE,
+            vertices, layer, color, lineType,
+            shape: entity.endAngle === undefined
+        })
     }
 
     *_DecomposeCircle(entity, blockCtx) {
@@ -409,10 +562,10 @@ export class DxfScene {
         this._GenerateArcVertices({vertices, center: entity.center, radius: entity.radius,
                                    transform: this._GetEntityExtrusionTransform(entity)})
         yield new Entity({
-                             type: Entity.Type.POLYLINE,
-                             vertices, layer, color, lineType,
-                             shape: true
-                         })
+            type: Entity.Type.POLYLINE,
+            vertices, layer, color, lineType,
+            shape: true
+        })
     }
 
     *_DecomposeEllipse(entity, blockCtx) {
@@ -424,27 +577,30 @@ export class DxfScene {
                                  entity.majorAxisEndPoint.y * entity.majorAxisEndPoint.y)
         const yR = xR * entity.axisRatio
         const rotation = Math.atan2(entity.majorAxisEndPoint.y, entity.majorAxisEndPoint.x)
-        this._GenerateArcVertices({vertices, center: entity.center, radius: xR,
-                                   startAngle: entity.startAngle, endAngle: entity.endAngle,
-                                   yRadius: yR,
-                                   transform: this._GetEntityExtrusionTransform(entity)})
-        if (rotation !== 0) {
-            //XXX should account angDir?
-            const cos = Math.cos(rotation)
-            const sin = Math.sin(rotation)
-            for (const v of vertices) {
-                const tx = v.x - entity.center.x
-                const ty = v.y - entity.center.y
-                /* Rotate the vertex around the ellipse center point. */
-                v.x = tx * cos - ty * sin + entity.center.x
-                v.y = tx * sin + ty * cos + entity.center.y
-            }
+
+        const startAngle = entity.startAngle ?? 0
+        let endAngle = entity.endAngle ?? startAngle + 2 * Math.PI
+        while (endAngle <= startAngle) {
+            endAngle += Math.PI * 2
         }
+        const isClosed = (entity.endAngle ?? null) === null ||
+            Math.abs(endAngle - startAngle - 2 * Math.PI) < 1e-6
+
+        this._GenerateArcVertices({vertices, center: entity.center, radius: xR,
+                                   startAngle: entity.startAngle,
+                                   endAngle: isClosed ? null : entity.endAngle,
+                                   yRadius: yR,
+                                   rotation,
+                                   /* Assuming mirror transform if present, for ellipse it just
+                                    * reverses angle direction.
+                                    */
+                                   ccwAngleDir: !this._GetEntityExtrusionTransform(entity)})
+
         yield new Entity({
-                             type: Entity.Type.POLYLINE,
-                             vertices, layer, color, lineType,
-                             shape: entity.endAngle === undefined
-                         })
+            type: Entity.Type.POLYLINE,
+            vertices, layer, color, lineType,
+            shape: isClosed
+        })
     }
 
     *_DecomposePoint(entity, blockCtx) {
@@ -489,6 +645,31 @@ export class DxfScene {
             lineType: null
         })
     }
+
+    *_DecomposeAttribute(entity, blockCtx) {
+        if (!this.textRenderer.canRender) {
+            return;
+        }
+
+        const insertEntity = this.inserts.get(entity.ownerHandle)
+        const layer = this._GetEntityLayer(insertEntity ?? entity, blockCtx)
+        const color = this._GetEntityColor(insertEntity ?? entity, blockCtx)
+
+        //XXX lookup font style attributes
+
+        yield* this.textRenderer.Render({
+            text: ParseSpecialChars(entity.text),
+            fontSize: entity.textHeight * entity.scale,
+            startPos: entity.startPoint,
+            endPos: entity.endPoint,
+            rotation: entity.rotation,
+            hAlign: entity.horizontalJustification,
+            vAlign: entity.verticalJustification,
+            color,
+            layer
+        })
+    }
+
 
     /** Create line segments for point marker.
      * @param vertices
@@ -634,7 +815,7 @@ export class DxfScene {
             const _vertices = []
             if (hasFirstTriangle && !hasSecondTriangle) {
                 _vertices.push(v0, v1, v2)
-            } if (!hasFirstTriangle && hasSecondTriangle) {
+            } else if (!hasFirstTriangle && hasSecondTriangle) {
                 _vertices.push(v1, v3, v2)
             } else {
                 _vertices.push(v0, v1, v3, v2)
@@ -675,7 +856,7 @@ export class DxfScene {
         const layer = this._GetEntityLayer(entity, blockCtx)
         const color = this._GetEntityColor(entity, blockCtx)
         yield* this.textRenderer.Render({
-            text: this._ParseSpecialChars(entity.text),
+            text: ParseSpecialChars(entity.text),
             fontSize: entity.textHeight,
             startPos: entity.startPoint,
             endPos: entity.endPoint,
@@ -694,7 +875,7 @@ export class DxfScene {
         const layer = this._GetEntityLayer(entity, blockCtx)
         const color = this._GetEntityColor(entity, blockCtx)
         const parser = new MTextFormatParser()
-        parser.Parse(this._ParseSpecialChars(entity.text))
+        parser.Parse(ParseSpecialChars(entity.text))
         yield* this.textRenderer.RenderMText({
             formattedText: parser.GetContent(),
             fontSize: entity.height,
@@ -706,6 +887,526 @@ export class DxfScene {
             width: entity.width,
             color, layer
         })
+    }
+
+    /**
+     * @return {?LinearDimension} Dimension handler instance, null if not possible to create from
+     * the provided entity.
+     */
+    _CreateLinearDimension(entity) {
+        const type = (entity.dimensionType || 0) & 0xf
+        /* For now support linear dimensions only. */
+        if ((type != 0 && type != 1) || !entity.linearOrAngularPoint1 ||
+            !entity.linearOrAngularPoint2 || !entity.anchorPoint) {
+
+            return null
+        }
+
+        let style = null
+        if (entity.hasOwnProperty("styleName")) {
+            style = this.dimStyles.get(entity.styleName)
+        }
+
+        const dim = new LinearDimension({
+            p1: new Vector2().copy(entity.linearOrAngularPoint1),
+            p2: new Vector2().copy(entity.linearOrAngularPoint2),
+            anchor: new Vector2().copy(entity.anchorPoint),
+            isAligned: type == 1,
+            angle: entity.angle,
+            text: entity.text,
+            textAnchor: entity.middleOfText ? new Vector2().copy(entity.middleOfText) : null,
+            textRotation: entity.textRotation
+
+        /* styleResolver */
+        }, valueName => {
+            return this._GetDimStyleValue(valueName, entity, style)
+
+        /* textWidthCalculator */
+        }, (text, fontSize) => {
+            return this.textRenderer.GetLineWidth(text, fontSize)
+        })
+
+        if (!dim.IsValid) {
+            console.warn("Invalid dimension geometry detected for " + entity.handle)
+            return null
+        }
+
+        return dim
+    }
+
+    *_DecomposeDimension(entity, blockCtx) {
+        if ((entity.block ?? null) !== null && this.blocks.has(entity.block)) {
+            /* Dimension may have pre-rendered block attached. Then just render this block instead
+             * of synthesizing dimension geometry from parameters.
+             *
+             * Create dummy INSERT entity.
+             */
+            const insert = {
+                name: entity.block,
+                position: {x: 0, y: 0},
+                layer: entity.layer,
+                color: entity.color,
+                colorIndex: entity.colorIndex
+            }
+            this._ProcessInsert(insert, blockCtx)
+            return
+        }
+
+        /* https://ezdxf.readthedocs.io/en/stable/tutorials/linear_dimension.html
+         * https://ezdxf.readthedocs.io/en/stable/tables/dimstyle_table_entry.html
+         */
+
+        const dim = this._CreateLinearDimension(entity)
+        if (!dim) {
+            return
+        }
+
+        const layer = this._GetEntityLayer(entity, blockCtx)
+        const color = this._GetEntityColor(entity, blockCtx)
+        const transform = this._GetEntityExtrusionTransform(entity)
+
+        const layout = dim.GenerateLayout()
+
+        for (const line of layout.lines) {
+            const vertices = []
+
+            if (transform) {
+                line.start.applyMatrix3(transform)
+                line.end.applyMatrix3(transform)
+            }
+            vertices.push(line.start, line.end)
+
+            yield new Entity({
+                type: Entity.Type.LINE_SEGMENTS,
+                vertices,
+                layer,
+                color: line.color ?? color
+            })
+        }
+
+        for (const triangle of layout.triangles) {
+            if (transform) {
+                for (const v of triangle.vertices) {
+                    v.applyMatrix3(transform)
+                }
+            }
+
+            yield new Entity({
+                type: Entity.Type.TRIANGLES,
+                vertices: triangle.vertices,
+                indices: triangle.indices,
+                layer,
+                color: triangle.color ?? color
+            })
+        }
+
+        if (this.textRenderer.canRender) {
+            for (const text of layout.texts) {
+                if (transform) {
+                    //XXX does not affect text rotation and mirroring
+                    text.position.applyMatrix3(transform)
+                }
+                yield* this.textRenderer.Render({
+                    text: text.text,
+                    fontSize: text.size,
+                    startPos: text.position,
+                    rotation: text.angle,
+                    hAlign: HAlign.CENTER,
+                    vAlign: VAlign.MIDDLE,
+                    color: text.color ?? color,
+                    layer
+                })
+            }
+        }
+    }
+
+    *_DecomposeHatch(entity, blockCtx) {
+        if (entity.isSolid) {
+            //XXX solid hatch not yet supported
+            return
+        }
+
+        const style = entity.hatchStyle ?? 0
+
+        if (style != HatchStyle.ODD_PARITY && style != HatchStyle.THROUGH_ENTIRE_AREA) {
+            //XXX other styles not yet supported
+            return
+        }
+
+        const boundaryLoops = this._GetHatchBoundaryLoops(entity)
+        if (boundaryLoops.length == 0) {
+            console.warn("HATCH entity with empty boundary loops array " +
+                "(perhaps some loop types are not implemented yet)")
+            return
+        }
+
+        const calc = new HatchCalculator(boundaryLoops, style)
+
+        const layer = this._GetEntityLayer(entity, blockCtx)
+        const color = this._GetEntityColor(entity, blockCtx)
+        const transform = this._GetEntityExtrusionTransform(entity)
+
+        let pattern = null
+        if (entity.patternName) {
+            pattern = LookupPattern(entity.patternName, this.isMetric)
+            if (!pattern) {
+                console.log(`Hatch pattern with name ${entity.patternName} not found ` +
+                            `(metric: ${this.isMetric})`)
+            }
+        }
+        if (pattern == null && entity.definitionLines) {
+            pattern = new Pattern(entity.definitionLines, null, false)
+        }
+        if (pattern == null) {
+            pattern = LookupPattern("ANSI31")
+        }
+        if (!pattern) {
+            return
+        }
+
+        const seedPoints = entity.seedPoints ? entity.seedPoints : [{x: 0, y: 0}]
+
+        for (const seedPoint of seedPoints) {
+
+            const patTransform = calc.GetPatternTransform({
+                seedPoint,
+                angle: entity.patternAngle,
+                scale: entity.patternScale
+            })
+
+            for (const line of pattern.lines) {
+
+                let offsetX
+                let offsetY
+                if (pattern.offsetInLineSpace) {
+                    offsetX = line.offset.x
+                    offsetY = line.offset.y
+                } else {
+                    const sin = Math.sin(-(line.angle ?? 0))
+                    const cos = Math.cos(-(line.angle ?? 0))
+                    offsetX = line.offset.x * cos - line.offset.y * sin
+                    offsetY = line.offset.x * sin + line.offset.y * cos
+                }
+
+                /* Normalize offset so that Y is always non-negative. Inverting offset vector
+                 * direction does not change lines positions.
+                 */
+                if (offsetY < 0) {
+                    offsetY = -offsetY
+                    offsetX = -offsetX
+                }
+
+                const lineTransform = calc.GetLineTransform({
+                    patTransform,
+                    basePoint: line.base,
+                    angle: line.angle ?? 0
+                })
+
+                const bbox = calc.GetBoundingBox(lineTransform)
+                const margin = (bbox.max.x - bbox.min.x) * 0.05
+
+                /* First determine range of line indices. Line with index 0 goes through base point
+                 * (which is [0; 0] in line coordinates system). Line with index `n`` starts in `n`
+                 * offset vectors added to the base point.
+                 */
+                let minLineIdx, maxLineIdx
+                if (offsetY == 0) {
+                    /* Degenerated to single line. */
+                    minLineIdx = 0
+                    maxLineIdx = 0
+                } else {
+                    minLineIdx = Math.ceil(bbox.min.y / offsetY)
+                    maxLineIdx = Math.floor(bbox.max.y / offsetY)
+                }
+
+                if (maxLineIdx - minLineIdx > MAX_HATCH_LINES) {
+                    console.warn("Too many lines produced by hatching pattern")
+                    continue
+                }
+
+                let dashPatLength
+                if (line.dashes && line.dashes.length > 1) {
+                    dashPatLength = 0
+                    for (const dash of line.dashes) {
+                        if (dash < 0) {
+                            dashPatLength -= dash
+                        } else {
+                            dashPatLength += dash
+                        }
+                    }
+                } else {
+                    dashPatLength = null
+                }
+
+                const ocsTransform = lineTransform.clone().invert()
+
+                for (let lineIdx = minLineIdx; lineIdx <= maxLineIdx; lineIdx++) {
+                    const y = lineIdx * offsetY
+                    const xBase = lineIdx * offsetX
+
+                    const xStart = bbox.min.x - margin
+                    const xEnd = bbox.max.x + margin
+                    const lineLength = xEnd - xStart
+                    const start = new Vector2(xStart, y).applyMatrix3(ocsTransform)
+                    const end = new Vector2(xEnd, y).applyMatrix3(ocsTransform)
+                    const lineVec = end.clone().sub(start)
+                    const clippedSegments = calc.ClipLine([start, end])
+
+                    function GetParam(x) {
+                        return (x - xStart) / lineLength
+                    }
+
+                    function RenderSegment(seg) {
+                        const p1 = lineVec.clone().multiplyScalar(seg[0]).add(start)
+                        const p2 = lineVec.clone().multiplyScalar(seg[1]).add(start)
+                        if (transform) {
+                            p1.applyMatrix3(transform)
+                            p2.applyMatrix3(transform)
+                        }
+                        if (seg[1] - seg[0] <= Number.EPSILON) {
+                            return new Entity({
+                                type: Entity.Type.POINTS,
+                                vertices: [p1],
+                                layer, color
+                            })
+                        }
+                        return new Entity({
+                            type: Entity.Type.LINE_SEGMENTS,
+                            vertices: [p1, p2],
+                            layer, color
+                        })
+                    }
+
+                    /** Clip segment against `clippedSegments`. */
+                    function *ClipSegment(segStart, segEnd) {
+                        for (const seg of clippedSegments) {
+                            if (seg[0] >= segEnd) {
+                                return
+                            }
+                            if (seg[1] <= segStart) {
+                                continue
+                            }
+                            const _start = Math.max(segStart, seg[0])
+                            const _end = Math.min(segEnd, seg[1])
+                            yield [_start, _end]
+                            segStart = _end
+                        }
+                    }
+
+                    /* Determine range for segment indices. One segment is one full sequence of
+                     * dashes. In case there is no dashes (solid line), just use hatch bounds.
+                     */
+                    if (dashPatLength !== null) {
+                        let minSegIdx = Math.floor((xStart - xBase) / dashPatLength)
+                        let maxSegIdx = Math.floor((xEnd - xBase) / dashPatLength)
+                        if (maxSegIdx - minSegIdx >= MAX_HATCH_SEGMENTS) {
+                            console.warn("Too many segments produced by hatching pattern line")
+                            continue
+                        }
+
+                        for (let segIdx = minSegIdx; segIdx <= maxSegIdx; segIdx++) {
+                            let segStartParam = GetParam(xBase + segIdx * dashPatLength)
+
+                            for (let dashLength of line.dashes) {
+                                const isSpace = dashLength < 0
+                                if (isSpace) {
+                                    dashLength = -dashLength
+                                }
+                                const dashLengthParam = dashLength / lineLength
+                                if (!isSpace) {
+                                    for (const seg of ClipSegment(segStartParam,
+                                                                  segStartParam + dashLengthParam)) {
+                                        yield RenderSegment(seg)
+                                    }
+                                }
+                                segStartParam += dashLengthParam
+                            }
+                        }
+
+                    } else {
+                        /* Single solid line. */
+                        for (const seg of clippedSegments) {
+                            yield RenderSegment(seg)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** @return {Vector2[][]} Each loop is a list of points in OCS coordinates. */
+    _GetHatchBoundaryLoops(entity) {
+        if (!entity.boundaryLoops) {
+            return []
+        }
+
+        const result = []
+
+        const AddPoints = (vertices, points) => {
+            const n = points.length
+            if (n == 0) {
+                return
+            }
+            if (vertices.length == 0) {
+                vertices.push(points[0])
+            } else {
+                const lastPt = vertices[vertices.length - 1]
+                if (lastPt.x != points[0].x || lastPt.y != points[0].y) {
+                    vertices.push(points[0])
+                }
+            }
+            for (let i = 1; i < n; i++) {
+                vertices.push(points[i])
+            }
+        }
+
+        for (const loop of entity.boundaryLoops) {
+            const vertices = []
+
+            //XXX handle external references
+
+            if (loop.type & 2) {
+                /* Polyline. */
+                for (let vtxIdx = 0; vtxIdx < loop.polyline.vertices.length; vtxIdx++) {
+                    const vtx = loop.polyline.vertices[vtxIdx]
+                    if ((vtx.bulge ?? 0) == 0) {
+                        vertices.push(new Vector2(vtx.x, vtx.y))
+                    } else {
+                        const prevVtx = loop.polyline.vertices[vtxIdx == 0 ?
+                            loop.polyline.vertices.length - 1 : vtxIdx - 1]
+                        if ((prevVtx.bulge ?? 0) == 0) {
+                            /* Start vertex is not produced by _GenerateBulgeVertices(). */
+                            vertices.push(new Vector2(vtx.x, vtx.y))
+                        }
+                        const nextVtx = loop.polyline.vertices[
+                            vtxIdx == loop.polyline.vertices.length - 1 ? 0 : vtxIdx + 1]
+                        this._GenerateBulgeVertices(vertices, vtx, nextVtx, vtx.bulge)
+                    }
+                }
+
+            } else if (loop.edges && loop.edges.length > 0) {
+                for (const edge of loop.edges) {
+                    switch (edge.type) {
+                    case 1:
+                        /* Line segment. */
+                        AddPoints(vertices, [new Vector2(edge.start.x, edge.start.y),
+                                             new Vector2(edge.end.x, edge.end.y)])
+                        break
+                    case 2: {
+                        /* Circular arc. */
+                        const arcVertices = []
+                        this._GenerateArcVertices({
+                            vertices: arcVertices,
+                            center: edge.start,
+                            radius: edge.radius,
+                            startAngle: edge.startAngle,
+                            endAngle: edge.endAngle,
+                            ccwAngleDir: edge.isCcw
+                        })
+                        AddPoints(vertices, arcVertices)
+                        break
+                    }
+                    case 3: {
+                        /* Elliptic arc. */
+                        const center = edge.start
+                        const majorAxisEndPoint = edge.end
+                        const xR = Math.sqrt(majorAxisEndPoint.x * majorAxisEndPoint.x +
+                                             majorAxisEndPoint.y * majorAxisEndPoint.y)
+                        const axisRatio = edge.radius
+                        const yR = xR * axisRatio
+                        const rotation = Math.atan2(majorAxisEndPoint.y, majorAxisEndPoint.x)
+                        const arcVertices = []
+                        this._GenerateArcVertices({
+                            vertices: arcVertices,
+                            center,
+                            radius: xR,
+                            startAngle: edge.startAngle,
+                            endAngle: edge.endAngle,
+                            yRadius: yR,
+                            ccwAngleDir: edge.isCcw
+                        })
+                        if (rotation !== 0) {
+                            //XXX should account angDir?
+                            const cos = Math.cos(rotation)
+                            const sin = Math.sin(rotation)
+                            for (const v of arcVertices) {
+                                const tx = v.x - center.x
+                                const ty = v.y - center.y
+                                /* Rotate the vertex around the ellipse center point. */
+                                v.x = tx * cos - ty * sin + center.x
+                                v.y = tx * sin + ty * cos + center.y
+                            }
+                        }
+                        AddPoints(vertices, arcVertices)
+                        break;
+                    }
+                    case 4:
+                        /* Spline. */
+                        const controlPoints = edge.controlPoints.map(p => [p.x, p.y])
+                        const subdivisions = controlPoints.length * SPLINE_SUBDIVISION
+                        const step = 1 / subdivisions
+                        for (let i = 0; i <= subdivisions; i++) {
+                            const pt = this._InterpolateSpline(i * step, edge.degreeOfSplineCurve,
+                                                               controlPoints,
+                                                               edge.knotValues)
+                            vertices.push(new Vector2(pt[0],pt[1]))
+                        }
+                        break;
+                    default:
+                        console.warn("Unhandled hatch boundary loop edge type: " + edge.type)
+                    }
+                }
+            }
+
+            if (vertices.length > 2) {
+                const first = vertices[0]
+                const last = vertices[vertices.length - 1]
+                if (last.x == first.x && last.y == first.y) {
+                    vertices.length = vertices.length - 1
+                }
+            }
+            if (vertices.length > 2) {
+                result.push(vertices)
+            }
+        }
+
+        return result
+    }
+
+    _GetDimStyleValue(valueName, entity, style) {
+        const entries = entity?.xdata?.ACAD?.DSTYLE?.values
+        if (entries) {
+            let isVarCode = true
+            let found = false
+            for (const e of entries) {
+                if (isVarCode) {
+                    if (e.code != 1070) {
+                        /* Unexpected group code. */
+                        break
+                    }
+                    if (dimStyleCodes.get(e.value) == valueName) {
+                        found = true
+                    }
+                } else if (found) {
+                    return e.value
+                }
+                isVarCode = !isVarCode
+            }
+        }
+        if (style && style.hasOwnProperty(valueName)) {
+            return style[valueName]
+        }
+        if (this.vars.has(valueName)) {
+            return this.vars.get(valueName)
+        }
+        if (DEFAULT_VARS.hasOwnProperty(valueName)) {
+            const value = DEFAULT_VARS[valueName]
+            if (value instanceof Function) {
+                return value.call(this)
+            }
+            return value
+        }
+        return null
     }
 
     /**
@@ -724,6 +1425,7 @@ export class DxfScene {
             const block = this.blocks.get(entity.name)
             if (!block) {
                 console.warn("Unresolved nested block reference: " + entity.name)
+                return
             }
             const nestedCtx = blockCtx.NestedBlockContext(block, entity)
             if (block.data.entities) {
@@ -735,7 +1437,7 @@ export class DxfScene {
         }
 
         const block = this.blocks.get(entity.name)
-        if (block === null) {
+        if (!block) {
             console.warn("Unresolved block reference in INSERT: " + entity.name)
             return
         }
@@ -840,6 +1542,12 @@ export class DxfScene {
     }
 
     *_DecomposePolyline(entity, blockCtx = null) {
+
+        if (entity.isPolyfaceMesh) {
+            yield *this._DecomposePolyfaceMesh(entity, blockCtx)
+            return
+        }
+
         let entityVertices, verticesCount
         if (entity.includesCurveFitVertices || entity.includesSplineFitVertices) {
             entityVertices = entity.vertices.filter(v => v.splineVertex || v.curveFittingVertex)
@@ -943,10 +1651,109 @@ export class DxfScene {
         }
     }
 
+    *_DecomposePolyfaceMesh(entity, blockCtx = null) {
+        const layer = this._GetEntityLayer(entity, blockCtx)
+        const color = this._GetEntityColor(entity, blockCtx)
+
+        const vertices = []
+        const faces = []
+
+        for (const v of entity.vertices) {
+            if (v.faces) {
+                const face = {
+                    indices: [],
+                    hiddenEdges: []
+                }
+                for (const vIdx of v.faces) {
+                    if (vIdx == 0) {
+                        break
+                    }
+                    face.indices.push(vIdx < 0 ? -vIdx - 1 : vIdx - 1)
+                    face.hiddenEdges.push(vIdx < 0)
+                }
+                if (face.indices.length == 3 || face.indices.length == 4) {
+                    faces.push(face)
+                }
+            } else {
+                vertices.push(new Vector2(v.x, v.y))
+            }
+        }
+
+        const polylines = []
+        const CommitLineSegment = (startIdx, endIdx) => {
+            if (polylines.length > 0) {
+                const prev = polylines[polylines.length - 1]
+                if (prev.indices[prev.indices.length - 1] == startIdx) {
+                    prev.indices.push(endIdx)
+                    return
+                }
+                if (prev.indices[0] == prev.indices[prev.indices.length - 1]) {
+                    prev.isClosed = true
+                }
+            }
+            polylines.push({
+                indices: [startIdx, endIdx],
+                isClosed: false
+            })
+        }
+
+        for (const face of faces) {
+
+            if (this.options.wireframeMesh) {
+                for (let i = 0; i < face.indices.length; i++) {
+                    if (face.hiddenEdges[i]) {
+                        continue
+                    }
+                    const nextIdx = i < face.indices.length - 1 ? i + 1 : 0
+                    CommitLineSegment(face.indices[i], face.indices[nextIdx])
+                }
+
+            } else {
+                let indices
+                if (face.indices.length == 3) {
+                    indices = face.indices
+                } else {
+                    indices = [face.indices[0], face.indices[1], face.indices[2],
+                               face.indices[0], face.indices[2], face.indices[3]]
+                }
+                yield new Entity({
+                    type: Entity.Type.TRIANGLES,
+                    vertices, indices, layer, color
+                })
+            }
+        }
+
+        if (this.options.wireframeMesh) {
+            for (const pl of polylines) {
+                if (pl.length == 2) {
+                    yield new Entity({
+                        type: Entity.Type.LINE_SEGMENTS,
+                        vertices: [vertices[pl.indices[0]], vertices[pl.indices[1]]],
+                        layer, color
+                    })
+                } else {
+                    const _vertices = []
+                    for (const vIdx of pl.indices) {
+                        _vertices.push(vertices[vIdx])
+                    }
+                    yield new Entity({
+                        type: Entity.Type.POLYLINE,
+                        vertices: _vertices, layer, color,
+                        shape: pl.isClosed
+                    })
+                }
+            }
+        }
+    }
+
     *_DecomposeSpline(entity, blockCtx = null) {
         const color = this._GetEntityColor(entity, blockCtx)
         const layer = this._GetEntityLayer(entity, blockCtx)
         const lineType = this._GetLineType(entity, null, blockCtx)
+        if (!entity.controlPoints) {
+            //XXX knots or fit points not supported yet
+            return
+        }
         const controlPoints = entity.controlPoints.map(p => [p.x, p.y])
         const vertices = []
         const subdivisions = controlPoints.length * SPLINE_SUBDIVISION
@@ -1225,35 +2032,6 @@ export class DxfScene {
         return new Matrix3().scale(-1, 1)
     }
 
-    /**
-     * Parse special characters in text entities and convert them to corresponding unicode
-     * characters.
-     * https://knowledge.autodesk.com/support/autocad/learn-explore/caas/CloudHelp/cloudhelp/2019/ENU/AutoCAD-Core/files/GUID-518E1A9D-398C-4A8A-AC32-2D85590CDBE1-htm.html
-     * @param {string} text Raw string.
-     * @return {string} String with special characters replaced.
-     */
-    _ParseSpecialChars(text) {
-        return text.replaceAll(SPECIAL_CHARS_RE, (match, p1, p2) => {
-            if (p1 !== undefined) {
-                switch (p1) {
-                case "d":
-                    return "\xb0"
-                case "p":
-                    return "\xb1"
-                case "c":
-                    return "\u2205"
-                }
-            } else if (p2 !== undefined) {
-                const code = parseInt(p2, 16)
-                if (isNaN(code)) {
-                    return match
-                }
-                return String.fromCharCode(code)
-            }
-            return match
-        })
-    }
-
     /** @return {RenderBatch} */
     _GetBatch(key) {
         let batch = this.batches.find({key})
@@ -1346,6 +2124,7 @@ export class DxfScene {
         for (const layer of this.layers.values()) {
             scene.layers.push({
                 name: layer.name,
+                displayName: layer.displayName,
                 color: layer.color
             })
         }
@@ -1582,6 +2361,7 @@ class Block {
         return this.offset !== null
     }
 
+    /** @param {{}} entity May be either INSERT or DIMENSION. */
     RegisterInsert(entity) {
         this.useCount++
     }
@@ -1920,8 +2700,10 @@ DxfScene.DefaultOptions = {
     arcTessellationAngle: 10 / 180 * Math.PI,
     /** Divide arc to at least the specified number of segments. */
     minArcTessellationSubdivisions: 8,
-    /** Render meshes (3DFACE group) as wireframe instead of solid. */
+    /** Render meshes (3DFACE group, POLYLINE polyface mesh) as wireframe instead of solid. */
     wireframeMesh: false,
+    /** Suppress paper-space entities when true (only model-space is rendered). */
+    suppressPaperSpace: false,
     /** Text rendering options. */
     textOptions: TextRenderer.DefaultOptions,
 }

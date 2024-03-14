@@ -37,7 +37,8 @@ export class DxfViewer {
                 alpha: options.canvasAlpha,
                 premultipliedAlpha: options.canvasPremultipliedAlpha,
                 antialias: options.antialias,
-                depth: false
+                depth: false,
+                preserveDrawingBuffer: options.preserveDrawingBuffer
             })
         } catch (e) {
             console.log("Failed to create renderer: " + e)
@@ -45,6 +46,10 @@ export class DxfViewer {
             return
         }
         const renderer = this.renderer
+        /* Prevent bounding spheres calculations which fails due to non-conventional geometry
+         * buffers layout. Also do not waste CPU on sorting which we do not need anyway.
+         */
+        renderer.sortObjects = false
         renderer.setPixelRatio(window.devicePixelRatio)
 
         const camera = this.camera = new three.OrthographicCamera(-1, 1, 1, -1, 0.1, 2);
@@ -73,7 +78,6 @@ export class DxfViewer {
         renderer.setSize(this.canvasWidth, this.canvasHeight)
 
         this.canvas = renderer.domElement
-        this.canvas.getContext("webgl", { premultipliedAlpha: false })
         domContainer.style.display = "block"
         if (options.autoResize) {
             this.canvas.style.position = "absolute"
@@ -105,8 +109,19 @@ export class DxfViewer {
         return Boolean(this.renderer)
     }
 
+    /**
+     * @returns {three.WebGLRenderer | null} Returns the created Three.js renderer.
+     */
+    GetRenderer(){
+        return this.renderer;
+    }
+
     GetCanvas() {
         return this.canvas
+    }
+
+    GetDxf() {
+        return this.parsedDxf
     }
 
     SetSize(width, height) {
@@ -161,16 +176,17 @@ export class DxfViewer {
         this.Clear()
 
         this.worker = new DxfWorker(workerFactory ? workerFactory() : null)
-        const scene = await this.worker.Load(url, fonts, this.options, progressCbk)
+        const {scene, dxf} = await this.worker.Load(url, fonts, this.options, progressCbk)
         await this.worker.Destroy()
         this.worker = null
+        this.parsedDxf = dxf
 
         this.origin = scene.origin
         this.bounds = scene.bounds
         this.hasMissingChars = scene.hasMissingChars
 
         for (const layer of scene.layers) {
-            this.layers.set(layer.name, new Layer(layer.name, layer.color))
+            this.layers.set(layer.name, new Layer(layer.name, layer.displayName, layer.color))
         }
 
         /* Load all blocks on the first pass. */
@@ -228,7 +244,11 @@ export class DxfViewer {
     GetLayers() {
         const result = []
         for (const lyr of this.layers.values()) {
-            result.push({name: lyr.name, color: this._TransformColor(lyr.color)})
+            result.push({
+                name: lyr.name,
+                displayName: lyr.displayName,
+                color: this._TransformColor(lyr.color)
+            })
         }
         return result
     }
@@ -329,7 +349,7 @@ export class DxfViewer {
         return this.scene
     }
 
-    /** @return {Camera} three.js camera for the viewer. */
+    /** @return {OrthographicCamera} three.js camera for the viewer. */
     GetCamera() {
         return this.camera
     }
@@ -337,6 +357,14 @@ export class DxfViewer {
     /** @return {Vector2} Scene origin in global drawing coordinates. */
     GetOrigin() {
         return this.origin
+    }
+
+    /**
+     * @return {?{maxX: number, maxY: number, minX: number, minY: number}} Scene bounds in model
+     *      space coordinates. Null if empty scene.
+     */
+    GetBounds() {
+        return this.bounds
     }
 
     /** Subscribe to the specified event. The following events are defined:
@@ -642,9 +670,9 @@ DxfViewer.MessageLevel = MessageLevel
 DxfViewer.DefaultOptions = {
     canvasWidth: 400,
     canvasHeight: 300,
-    /** Automatically resize canvas when the container is resized. This options
-     *  utilizes ResizeObserver API which is still not fully standardized. The specified canvas size
-     *  is ignored if the option is enabled.
+    /** Automatically resize canvas when the container is resized. This options utilizes
+     *  ResizeObserver API which is still not fully standardized. The specified canvas size is
+     *  ignored if the option is enabled.
      */
     autoResize: false,
     /** Frame buffer clear color. */
@@ -669,6 +697,20 @@ DxfViewer.DefaultOptions = {
     pointSize: 2,
     /** Scene generation options. */
     sceneOptions: DxfScene.DefaultOptions,
+    /** Retain the simple object representing the parsed DXF - will consume a lot of additional
+     * memory.
+     */
+    retainParsedDxf: false,
+    /** Whether to preserve the buffers until manually cleared or overwritten. */
+    preserveDrawingBuffer: false,
+    /** Encoding to use for decoding DXF file text content. DXF files newer than DXF R2004 (AC1018)
+     * use UTF-8 encoding. Older files use some code page which is specified in $DWGCODEPAGE header
+     * variable. Currently parser is implemented in such a way that encoding must be specified
+     * before the content is parsed so there is no chance to use this variable dynamically. This may
+     * be a subject for future changes. The specified value should be suitable for passing as
+     * `TextDecoder` constructor `label` parameter.
+     */
+    fileEncoding: "utf-8"
 }
 
 DxfViewer.SetupWorker = function () {
@@ -882,8 +924,9 @@ class Batch {
 }
 
 class Layer {
-    constructor(name, color) {
+    constructor(name, displayName, color) {
         this.name = name
+        this.displayName = displayName
         this.color = color
         this.objects = []
     }

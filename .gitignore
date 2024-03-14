@@ -3,3 +3,6 @@ test-data/
 /build/
 .history/
 *.tgz
+*.orig
+scratch/
+package-lock.json

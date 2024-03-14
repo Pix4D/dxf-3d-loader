@@ -76,26 +76,25 @@ export class DxfWorker {
     }
   }
 
-  async _ProcessRequestMessage(type, data, transfers, seq) {
-    switch (type) {
-      case DxfWorker.WorkerMsg.LOAD: {
-        const scene = await this._Load(
-          data.url,
-          data.fonts,
-          data.options,
-          (phase, size, totalSize) => this._SendProgress(seq, phase, size, totalSize),
-        );
-        transfers.push(scene.vertices);
-        transfers.push(scene.indices);
-        transfers.push(scene.transforms);
-        return scene;
-      }
-      case DxfWorker.WorkerMsg.DESTROY:
-        return null;
-      default:
-        throw 'Unknown message type: ' + type;
+    async _ProcessRequestMessage(type, data, transfers, seq) {
+        switch (type) {
+        case DxfWorker.WorkerMsg.LOAD: {
+            const {scene, dxf} = await this._Load(
+                data.url,
+                data.fonts,
+                data.options,
+                (phase, size, totalSize) => this._SendProgress(seq, phase, size, totalSize))
+            transfers.push(scene.vertices)
+            transfers.push(scene.indices)
+            transfers.push(scene.transforms)
+            return {scene, dxf}
+        }
+        case DxfWorker.WorkerMsg.DESTROY:
+            return null
+        default:
+            throw "Unknown message type: " + type
+        }
     }
-  }
 
   async _ProcessResponse(event) {
     const msg = event.data;
@@ -146,22 +145,22 @@ export class DxfWorker {
     });
   }
 
-  /** @return {Object} DxfScene serialized scene. */
-  async _Load(url, fonts, options, progressCbk) {
-    let fontFetchers;
-    if (fonts) {
-      fontFetchers = this._CreateFontFetchers(fonts, progressCbk);
-    } else {
-      fontFetchers = [];
+    /** @return {Object} DxfScene serialized scene. */
+    async _Load(url, fonts, options, progressCbk) {
+        let fontFetchers
+        if (fonts) {
+            fontFetchers = this._CreateFontFetchers(fonts, progressCbk)
+        } else {
+            fontFetchers = []
+        }
+        const dxf = await new DxfFetcher(url, options.fileEncoding).Fetch(progressCbk)
+        if (progressCbk) {
+            progressCbk("prepare", 0, null)
+        }
+        const dxfScene = new DxfScene(options)
+        await dxfScene.Build(dxf, fontFetchers)
+        return {scene: dxfScene.scene, dxf: options.retainParsedDxf === true ? dxf : undefined }
     }
-    const dxf = await new DxfFetcher(url).Fetch(progressCbk);
-    if (progressCbk) {
-      progressCbk('prepare', 0, null);
-    }
-    const dxfScene = new DxfScene3D(options);
-    await dxfScene.Build(dxf, fontFetchers);
-    return dxfScene.scene;
-  }
 
   _CreateFontFetchers(urls, progressCbk) {
     function CreateFetcher(url) {
@@ -225,7 +224,7 @@ DxfWorker.Request = class {
     this._Resolve(response);
   }
 
-  SetError(error) {
-    this._Reject(error);
-  }
-};
+    SetError(error) {
+        this._Reject(error)
+    }
+}

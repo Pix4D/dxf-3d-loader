@@ -1,8 +1,48 @@
-import { DxfScene3D, Entity } from './DxfScene3D';
-import { ShapePath } from 'three/src/extras/core/ShapePath';
-import { ShapeUtils } from 'three/src/extras/ShapeUtils';
-import { Matrix3, Vector2, Vector3 } from 'three';
-import { MTextFormatParser } from 'dxf-viewer/src/MTextFormatParser';
+import {DxfScene3D, Entity} from "./DxfScene3D"
+import {ShapePath} from "three/src/extras/core/ShapePath.js"
+import {ShapeUtils} from "three/src/extras/ShapeUtils.js"
+import {Matrix3, Vector2, Vector3} from "three"
+import {MTextFormatParser} from "dxf-viewer/src/MTextFormatParser"
+
+/** Regex for parsing special characters in text entities. */
+const SPECIAL_CHARS_RE = /(?:%%([dpcou%]))|(?:\\U\+([0-9a-fA-F]{4}))/g
+
+/**
+ * Parse special characters in text entities and convert them to corresponding unicode
+ * characters.
+ * https://knowledge.autodesk.com/support/autocad/learn-explore/caas/CloudHelp/cloudhelp/2019/ENU/AutoCAD-Core/files/GUID-518E1A9D-398C-4A8A-AC32-2D85590CDBE1-htm.html
+ * @param {string} text Raw string.
+ * @return {string} String with special characters replaced.
+ */
+export function ParseSpecialChars(text) {
+    return text.replaceAll(SPECIAL_CHARS_RE, (match, p1, p2) => {
+        if (p1 !== undefined) {
+            switch (p1) {
+            case "d":
+                return "\xb0"
+            case "p":
+                return "\xb1"
+            case "c":
+                return "\u2205"
+            case "o":
+                /* Toggles overscore mode on and off, not implemented. */
+                return ""
+            case "u":
+                /* Toggles underscore mode on and off, not implemented. */
+                return ""
+            case "%":
+                return "%"
+            }
+        } else if (p2 !== undefined) {
+            const code = parseInt(p2, 16)
+            if (isNaN(code)) {
+                return match
+            }
+            return String.fromCharCode(code)
+        }
+        return match
+    })
+}
 
 /**
  * Helper class for rendering text.
@@ -21,18 +61,18 @@ export class TextRenderer {
     this.fontFetchers = fontFetchers;
     this.fonts = [];
 
-    this.options = Object.create(DxfScene3D.DefaultOptions);
-    if (options) {
-      Object.assign(this.options, options);
+        this.options = Object.create(DxfScene3D.DefaultOptions)
+        if (options) {
+            Object.assign(this.options, options)
+        }
+        /* Indexed by character, value is CharShape. */
+        this.shapes = new Map()
+        this.stubShapeLoaded = false
+        /* Shape to display if no glyph found in the specified fonts. May be null if fallback
+         * character can not be rendered as well.
+         */
+        this.stubShape = null
     }
-    /* Indexed by character, value is CharShape. */
-    this.shapes = new Map();
-    this.stubShapeLoaded = false;
-    /* Shape to display if no glyph found in the specified fonts. May be null if fallback
-     * character can not be rendered as well.
-     */
-    this.stubShape = null;
-  }
 
   /** Fetch necessary fonts to render the provided text. Should be called for each string which
    * will be rendered later.
@@ -85,9 +125,25 @@ export class TextRenderer {
     return !charMissing;
   }
 
-  get canRender() {
-    return this.fonts !== null && this.fonts.length > 0;
-  }
+    get canRender() {
+        return this.fonts !== null && this.fonts.length > 0
+    }
+
+    /** Get width in model space units for a single line of text.
+     * @param text {string}
+     * @param fontSize {number}
+     */
+    GetLineWidth(text, fontSize) {
+        const block = new TextBlock(fontSize)
+        for (const char of text) {
+            const shape = this._GetCharShape(char)
+            if (!shape) {
+                continue
+            }
+            block.PushChar(char, shape)
+        }
+        return block.GetCurrentPosition()
+    }
 
   /**
    * @param text {string}
@@ -358,22 +414,22 @@ class Font {
 }
 
 /** TEXT group attribute 72 values. */
-const HAlign = Object.freeze({
-  LEFT: 0,
-  CENTER: 1,
-  RIGHT: 2,
-  ALIGNED: 3,
-  MIDDLE: 4,
-  FIT: 5,
-});
+export const HAlign = Object.freeze({
+    LEFT: 0,
+    CENTER: 1,
+    RIGHT: 2,
+    ALIGNED: 3,
+    MIDDLE: 4,
+    FIT: 5
+})
 
 /** TEXT group attribute 73 values. */
-const VAlign = Object.freeze({
-  BASELINE: 0,
-  BOTTOM: 1,
-  MIDDLE: 2,
-  TOP: 3,
-});
+export const VAlign = Object.freeze({
+    BASELINE: 0,
+    BOTTOM: 1,
+    MIDDLE: 2,
+    TOP: 3
+})
 
 /** MTEXT group attribute 71 values. */
 const MTextAttachment = Object.freeze({
