@@ -1,9 +1,9 @@
-import * as three from 'three';
 import { BatchingKey } from 'dxf-viewer/src/BatchingKey';
-import { DxfWorker } from './DxfWorker';
 import { MaterialKey } from 'dxf-viewer/src/MaterialKey';
-import { ColorCode, DxfScene3D } from './DxfScene3D';
 import { RBTree } from 'dxf-viewer/src/RBTree';
+import * as three from 'three';
+import { ColorCode, DxfScene3D } from './DxfScene3D';
+import { DxfWorker } from './DxfWorker';
 
 /** Level in "message" events. */
 const MessageLevel = Object.freeze({
@@ -110,10 +110,11 @@ export class DxfLoader {
       }
     }
 
-    const verticalExtent = scene.bounds.maxZ - scene.bounds.minZ;
-    this.isFlat = verticalExtent < 0.000000001;
+    if (scene.bounds) {
+      const verticalExtent = scene.bounds.maxZ - scene.bounds.minZ;
+      this.isFlat = verticalExtent < 0.000000001;
 
-    console.log(`DXF scene:
+      console.log(`DXF scene:
                      isFlat ${this.isFlat}
                      vertical extent ${verticalExtent}
                      ${scene.batches.length} batches,
@@ -122,6 +123,11 @@ export class DxfLoader {
                      vertices ${scene.vertices.byteLength} B,
                      indices ${scene.indices.byteLength} B
                      transforms ${scene.transforms.byteLength} B`);
+    } else {
+      throw Error("Empty document")
+    }
+
+
 
     /* Instantiate all entities. */
     for (const batch of scene.batches) {
@@ -640,7 +646,7 @@ class Batch {
     //XXX line type
     const materialFactory =
       this.key.geometryType === BatchingKey.GeometryType.POINTS ||
-      this.key.geometryType === BatchingKey.GeometryType.POINT_INSTANCE
+        this.key.geometryType === BatchingKey.GeometryType.POINT_INSTANCE
         ? this.viewer._GetSimplePointMaterial
         : this.viewer._GetSimpleColorMaterial;
 
