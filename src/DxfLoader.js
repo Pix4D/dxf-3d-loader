@@ -124,7 +124,7 @@ export class DxfLoader {
                      indices ${scene.indices.byteLength} B
                      transforms ${scene.transforms.byteLength} B`);
     } else {
-      throw Error("Empty document")
+      throw new Error("Empty document")
     }
 
 
