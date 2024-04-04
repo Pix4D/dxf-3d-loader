@@ -110,6 +110,7 @@ export class DxfLoader {
       }
     }
 
+    if (scene.bounds) {
     const verticalExtent = scene.bounds.maxZ - scene.bounds.minZ;
     this.isFlat = verticalExtent < 0.000000001;
 
@@ -122,6 +123,11 @@ export class DxfLoader {
                      vertices ${scene.vertices.byteLength} B,
                      indices ${scene.indices.byteLength} B
                      transforms ${scene.transforms.byteLength} B`);
+    } else {
+      throw new Error("Empty document")
+    }
+
+
 
     /* Instantiate all entities. */
     for (const batch of scene.batches) {
