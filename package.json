@@ -5,7 +5,7 @@
     "main": "src/index.js",
     "author": "Artyom Lebedev<artyom.lebedev@gmail.com>",
     "license": "Mozilla Public License 2.0",
-    "repository": "https://github.com/vagran/dxf-viewer",
+    "repository": "https://github.com/Pix4D/dxf-3d-loader",
     "keywords": [
         "dxf",
         "viewer",
