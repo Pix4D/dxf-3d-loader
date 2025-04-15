@@ -3,7 +3,7 @@
     "version": "0.0.3",
     "description": "JavaScript DXF 3D file loader",
     "main": "src/index.js",
-    "author": "Artyom Lebedev<artyom.lebedev@gmail.com>",
+    "author": "Pix4d SA",
     "license": "Mozilla Public License 2.0",
     "repository": "https://github.com/Pix4D/dxf-3d-loader",
     "keywords": [
