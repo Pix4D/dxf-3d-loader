@@ -1,6 +1,6 @@
-import { DxfFetcher } from 'dxf-viewer/src/DxfFetcher';
-import { DxfScene3D } from './DxfScene3D';
 import opentype from 'opentype.js';
+import { DxfFetcher } from './DxfFetcher';
+import { DxfScene3D } from './DxfScene3D';
 
 const MSG_SIGNATURE = 'DxfWorkerMsg';
 

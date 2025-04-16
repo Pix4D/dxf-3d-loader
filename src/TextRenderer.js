@@ -1,8 +1,8 @@
-import { DxfScene3D, Entity } from './DxfScene3D';
+import { Matrix3, Vector2, Vector3 } from 'three';
 import { ShapePath } from 'three/src/extras/core/ShapePath';
 import { ShapeUtils } from 'three/src/extras/ShapeUtils';
-import { Matrix3, Vector2, Vector3 } from 'three';
-import { MTextFormatParser } from 'dxf-viewer/src/MTextFormatParser';
+import { DxfScene3D, Entity } from './DxfScene3D';
+import { MTextFormatParser } from './MTextFormatParser';
 
 /**
  * Helper class for rendering text.
