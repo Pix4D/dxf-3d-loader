@@ -1,11 +1,12 @@
 {
     "name": "dxf-3d-loader",
-    "version": "1.0.19+pix4d.1",
+    "version": "1.0.42+pix4d.1",
     "description": "JavaScript DXF 3D file loader",
     "main": "src/index.js",
     "author": "Pix4d SA",
-    "license": "Mozilla Public License 2.0",
+    "license": "MPL-2.0",
     "repository": "https://github.com/Pix4D/dxf-3d-loader",
+    "type": "module",
     "keywords": [
         "dxf",
         "viewer",
@@ -18,12 +19,16 @@
         "src",
         "README.md",
         "LICENSE",
-        "CONTRIBUTORS"
+        "CONTRIBUTORS",
+        "CONTRIBUTING.md"
     ],
     "dependencies": {
-        "@types/three": "^0.144.0",
-        "three": "^0.146.0",
-        "loglevel": "^1.8.0",
-        "opentype.js": "^1.3.4"
+        "loglevel": "^1.9.1",
+        "opentype.js": "^1.3.4",
+        "three": "^0.161.0",
+        "earcut": "^3.0.0"
+    },
+    "devDependencies": {
+        "@types/three": "^0.161.2"
     }
 }
