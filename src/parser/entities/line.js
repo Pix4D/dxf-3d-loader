@@ -1,5 +1,5 @@
 
-import * as helpers from '../ParseHelpers'
+import * as helpers from "../ParseHelpers.js"
 
 export default function EntityParser() {}
 
@@ -24,10 +24,10 @@ EntityParser.prototype.parseEntity = function(scanner, curr) {
         case 100:
             break;
         default:
-            helpers.checkCommonEntityProperties(entity, curr);
+            helpers.checkCommonEntityProperties(entity, curr, scanner);
             break;
         }
-        
+
         curr = scanner.next();
     }
     return entity;

@@ -1,5 +1,5 @@
 
-import * as helpers from '../ParseHelpers'
+import * as helpers from "../ParseHelpers.js"
 
 export default function EntityParser() {}
 
@@ -23,9 +23,11 @@ EntityParser.prototype.parseEntity = function(scanner, curr) {
             entity.axisRatio = curr.value;
             break;
         case 41:
+            /* Already in radians. */
             entity.startAngle = curr.value;
             break;
         case 42:
+            /* Already in radians. */
             entity.endAngle = curr.value;
             break;
         case 2:
@@ -35,10 +37,10 @@ EntityParser.prototype.parseEntity = function(scanner, curr) {
             entity.extrusionDirection = helpers.parsePoint(scanner);
             break;
         default: // check common entity attributes
-            helpers.checkCommonEntityProperties(entity, curr);
+            helpers.checkCommonEntityProperties(entity, curr, scanner);
             break;
         }
-        
+
         curr = scanner.next();
     }
 
